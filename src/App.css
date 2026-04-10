@@ -1,0 +1,80 @@
+.app {
+  max-width: 720px;
+  padding: 24px;
+  margin: 0 auto;
+}
+
+.title {
+  margin: 0 0 16px;
+}
+
+.controlsRow {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.field {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.select {
+  min-width: 220px;
+}
+
+.ipInput {
+  width: 160px;
+}
+
+.panel {
+  margin-top: 16px;
+  display: grid;
+  gap: 12px;
+}
+
+.fieldWide {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.statusRow {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.status {
+  opacity: 0.85;
+}
+
+.colorInput {
+  padding: 5px 2px;
+  width: 44px;
+  height: 32px;
+  border-radius: 10px;
+}
+
+.colorInput {
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.colorInput::-webkit-color-swatch-wrapper {
+  padding: 1px 3px;
+}
+
+.colorInput::-webkit-color-swatch {
+  border: none;
+  border-radius: 8px;
+}
+
+.colorInput::-moz-color-swatch {
+  border: none;
+  border-radius: 8px;
+}
