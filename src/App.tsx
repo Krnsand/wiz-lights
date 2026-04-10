@@ -1,4 +1,6 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+
+import './App.css'
 
 export default function App() {
   const [bulbs, setBulbs] = useState<Array<{ ip: string; model?: string }>>([])
@@ -8,6 +10,53 @@ export default function App() {
   const [status, setStatus] = useState<string>('')
   const [isDiscovering, setIsDiscovering] = useState(false)
   const [isApplying, setIsApplying] = useState(false)
+  const [isHydrated, setIsHydrated] = useState(false)
+
+  useEffect(() => {
+    try {
+      const savedIp = localStorage.getItem('wiz.selectedIp')
+      const savedHex = localStorage.getItem('wiz.hex')
+      const savedBrightness = localStorage.getItem('wiz.brightness')
+
+      if (savedIp) setSelectedIp(savedIp)
+      if (savedHex) setHex(savedHex)
+      if (savedBrightness) {
+        const n = Number(savedBrightness)
+        if (Number.isFinite(n)) setBrightness(n)
+      }
+    } catch {
+      // ignore
+    } finally {
+      setIsHydrated(true)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!isHydrated) return
+    try {
+      localStorage.setItem('wiz.selectedIp', selectedIp)
+    } catch {
+      // ignore
+    }
+  }, [isHydrated, selectedIp])
+
+  useEffect(() => {
+    if (!isHydrated) return
+    try {
+      localStorage.setItem('wiz.hex', hex)
+    } catch {
+      // ignore
+    }
+  }, [isHydrated, hex])
+
+  useEffect(() => {
+    if (!isHydrated) return
+    try {
+      localStorage.setItem('wiz.brightness', String(brightness))
+    } catch {
+      // ignore
+    }
+  }, [isHydrated, brightness])
 
   const discover = async () => {
     setIsDiscovering(true)
@@ -52,20 +101,20 @@ export default function App() {
   }
 
   return (
-    <div style={{ padding: 24, fontFamily: 'system-ui, sans-serif', maxWidth: 720 }}>
-      <h1 style={{ marginTop: 0 }}>WiZ Bulb Controller</h1>
+    <div className="app">
+      <h1 className="title">WiZ Lights Controller</h1>
 
-      <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+      <div className="controlsRow">
         <button onClick={discover} disabled={isDiscovering}>
           {isDiscovering ? 'Discovering…' : 'Discover bulbs'}
         </button>
 
-        <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <label className="field">
           Bulb
           <select
             value={selectedIp}
             onChange={(e) => setSelectedIp(e.target.value)}
-            style={{ minWidth: 220 }}
+            className="select"
           >
             <option value="">Select…</option>
             {bulbs.map((b) => (
@@ -76,22 +125,23 @@ export default function App() {
           </select>
         </label>
 
-        <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <label className="field">
           IP
           <input
             value={selectedIp}
             placeholder="e.g. 192.168.1.42"
             onChange={(e) => setSelectedIp(e.target.value)}
-            style={{ width: 160 }}
+            className="ipInput"
           />
         </label>
       </div>
 
-      <div style={{ marginTop: 16, display: 'grid', gap: 12 }}>
-        <label style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+      <div className="panel">
+        <label className="fieldWide">
           Color
           <input
             type="color"
+            className="colorInput"
             value={hex}
             onChange={(e) => {
               const v = e.target.value
@@ -102,7 +152,7 @@ export default function App() {
           <code>{hex}</code>
         </label>
 
-        <label style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+        <label className="fieldWide">
           Brightness
           <input
             type="range"
@@ -119,11 +169,11 @@ export default function App() {
           <code>{brightness}</code>
         </label>
 
-        <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+        <div className="statusRow">
           <button onClick={() => void apply()} disabled={isApplying}>
             {isApplying ? 'Applying…' : 'Apply'}
           </button>
-          <span style={{ opacity: 0.85 }}>{status}</span>
+          <span className="status">{status}</span>
         </div>
       </div>
     </div>
