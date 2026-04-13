@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import './App.css'
 
@@ -21,8 +21,11 @@ export default function App() {
   const [isApplying, setIsApplying] = useState(false)
   const [isTogglingPower, setIsTogglingPower] = useState(false)
   const [isAnimating, setIsAnimating] = useState(false)
+  const [isDisco, setIsDisco] = useState(false)
   const [isOn, setIsOn] = useState(true)
   const [isHydrated, setIsHydrated] = useState(false)
+
+  const discoIntervalRef = useRef<number | null>(null)
 
   useEffect(() => {
     try {
@@ -79,6 +82,7 @@ export default function App() {
 
   useEffect(() => {
     if (!isHydrated) return
+    if (isDisco) return
     try {
       localStorage.setItem('wiz.h', String(h))
       localStorage.setItem('wiz.s', String(s))
@@ -86,16 +90,26 @@ export default function App() {
     } catch {
       // ignore
     }
-  }, [isHydrated, h, s, v])
+  }, [isHydrated, isDisco, h, s, v])
 
   useEffect(() => {
     if (!isHydrated) return
+    if (isDisco) return
     try {
       localStorage.setItem('wiz.brightness', String(brightness))
     } catch {
       // ignore
     }
-  }, [isHydrated, brightness])
+  }, [isHydrated, isDisco, brightness])
+
+  useEffect(() => {
+    return () => {
+      if (discoIntervalRef.current !== null) {
+        window.clearInterval(discoIntervalRef.current)
+        discoIntervalRef.current = null
+      }
+    }
+  }, [])
 
   useEffect(() => {
     if (!status) return
@@ -138,6 +152,20 @@ export default function App() {
     }
   }
 
+  const sendColor = async (next: { h: number; s: number; v: number }, nextBrightness = brightness) => {
+    if (!selectedIp) return
+    try {
+      const { r, g, b } = hsbToRgb(next)
+      await fetch('/api/color', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ip: selectedIp, r, g, b, brightness: nextBrightness }),
+      })
+    } catch {
+      // ignore
+    }
+  }
+
   const togglePower = async () => {
     if (!selectedIp) {
       setStatus('Select a bulb first.')
@@ -164,7 +192,11 @@ export default function App() {
     }
   }
 
-  const apply = async (next: { h: number; s: number; v: number }, nextBrightness = brightness) => {
+  const apply = async (
+    next: { h: number; s: number; v: number },
+    nextBrightness = brightness,
+    options?: { silent?: boolean },
+  ) => {
     if (!selectedIp) {
       setStatus('Select a bulb first.')
       return
@@ -181,12 +213,54 @@ export default function App() {
         const json = (await res.json().catch(() => ({}))) as { error?: string }
         throw new Error(json.error ?? `Request failed (${res.status})`)
       }
-      setStatus('Applied.')
+      if (!options?.silent) setStatus('Applied.')
     } catch (e) {
       setStatus(e instanceof Error ? e.message : String(e))
     } finally {
       setIsApplying(false)
     }
+  }
+
+  const startDisco = () => {
+    if (!selectedIp) {
+      setStatus('Select a bulb first.')
+      return
+    }
+    if (discoIntervalRef.current !== null) return
+
+    setIsDisco(true)
+    setStatus('Disco mode on.')
+
+    let lastHue: number | null = null
+
+    discoIntervalRef.current = window.setInterval(() => {
+      let nextHue = Math.floor(Math.random() * 360)
+      if (lastHue !== null) {
+        let guard = 0
+        while (Math.abs(nextHue - lastHue) < 25 && guard < 10) {
+          nextHue = Math.floor(Math.random() * 360)
+          guard++
+        }
+      }
+      lastHue = nextHue
+
+      const next = {
+        h: nextHue,
+        s: 70 + Math.floor(Math.random() * 31),
+        v: 85 + Math.floor(Math.random() * 16),
+      }
+
+      void sendColor(next, brightness)
+    }, 500)
+  }
+
+  const stopDisco = () => {
+    if (discoIntervalRef.current !== null) {
+      window.clearInterval(discoIntervalRef.current)
+      discoIntervalRef.current = null
+    }
+    setIsDisco(false)
+    setStatus('Disco mode off.')
   }
 
   const animate = async () => {
@@ -314,7 +388,7 @@ export default function App() {
           <code>{v}</code>
         </label>
 
-        {/* <label className="fieldWide">
+        <label className="fieldWide">
           Dimming
           <input
             type="range"
@@ -329,7 +403,8 @@ export default function App() {
             onTouchEnd={() => void apply({ h, s, v }, brightness)}
           />
           <code>{brightness}</code>
-        </label> */}
+
+        </label>
 
         {/* <label className="fieldWide">
           Current color
@@ -445,6 +520,15 @@ export default function App() {
           <button onClick={animate} disabled={isAnimating || isApplying || isTogglingPower}>
             {isAnimating ? 'Animating…' : 'Animate'}
           </button>
+          {!isDisco ? (
+            <button onClick={startDisco} disabled={isApplying || isAnimating || isTogglingPower}>
+              Disco
+            </button>
+          ) : (
+            <button onClick={stopDisco} disabled={isApplying || isAnimating || isTogglingPower}>
+              Stop Disco
+            </button>
+          )}
           <span className="status">{status}</span>
         </div>
       </div>
