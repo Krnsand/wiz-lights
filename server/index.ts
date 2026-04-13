@@ -1,6 +1,6 @@
 import cors from 'cors'
 import express from 'express'
-import { discoverBulbs, setColor } from './wiz'
+import { animateColor, discoverBulbs, setColor, setPower } from './wiz'
 
 import type { Request, Response } from 'express'
 
@@ -43,6 +43,78 @@ app.post('/api/color', async (req: Request, res: Response) => {
 
   try {
     await setColor({ ip, r, g, b, brightness })
+    res.json({ ok: true })
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
+  }
+})
+
+app.post('/api/power', async (req: Request, res: Response) => {
+  const { ip, on } = req.body as {
+    ip?: string
+    on?: boolean
+  }
+
+  if (!ip || typeof ip !== 'string') {
+    res.status(400).json({ error: 'Missing ip' })
+    return
+  }
+
+  if (typeof on !== 'boolean') {
+    res.status(400).json({ error: 'Missing on (boolean)' })
+    return
+  }
+
+  try {
+    await setPower({ ip, on })
+    res.json({ ok: true })
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
+  }
+})
+
+app.post('/api/animate', async (req: Request, res: Response) => {
+  const { ip, from, to, durationMs, brightness } = req.body as {
+    ip?: string
+    from?: { r?: number; g?: number; b?: number }
+    to?: { r?: number; g?: number; b?: number }
+    durationMs?: number
+    brightness?: number
+  }
+
+  if (!ip || typeof ip !== 'string') {
+    res.status(400).json({ error: 'Missing ip' })
+    return
+  }
+
+  if (!from || !to) {
+    res.status(400).json({ error: 'Missing from/to' })
+    return
+  }
+
+  if (typeof from.r !== 'number' || typeof from.g !== 'number' || typeof from.b !== 'number') {
+    res.status(400).json({ error: 'Missing from r/g/b (numbers)' })
+    return
+  }
+
+  if (typeof to.r !== 'number' || typeof to.g !== 'number' || typeof to.b !== 'number') {
+    res.status(400).json({ error: 'Missing to r/g/b (numbers)' })
+    return
+  }
+
+  if (typeof durationMs !== 'number') {
+    res.status(400).json({ error: 'Missing durationMs (number)' })
+    return
+  }
+
+  try {
+    await animateColor({
+      ip,
+      from: { r: from.r, g: from.g, b: from.b },
+      to: { r: to.r, g: to.g, b: to.b },
+      durationMs,
+      brightness,
+    })
     res.json({ ok: true })
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) })

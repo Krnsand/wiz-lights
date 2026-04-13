@@ -53,6 +53,14 @@
   opacity: 0.85;
 }
 
+.colorPreview {
+  width: 44px;
+  height: 32px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.06);
+}
+
 .colorInput {
   padding: 5px 2px;
   width: 44px;

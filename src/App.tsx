@@ -5,21 +5,58 @@ import './App.css'
 export default function App() {
   const [bulbs, setBulbs] = useState<Array<{ ip: string; model?: string }>>([])
   const [selectedIp, setSelectedIp] = useState<string>('')
-  const [hex, setHex] = useState<string>('#ff0000')
+  const [h, setH] = useState<number>(0)
+  const [s, setS] = useState<number>(100)
+  const [v, setV] = useState<number>(100)
+  const [fromH, setFromH] = useState<number>(0)
+  const [fromS, setFromS] = useState<number>(100)
+  const [fromV, setFromV] = useState<number>(100)
+  const [toH, setToH] = useState<number>(120)
+  const [toS, setToS] = useState<number>(100)
+  const [toV, setToV] = useState<number>(100)
   const [brightness, setBrightness] = useState<number>(255)
+  const [durationMs, setDurationMs] = useState<number>(1000)
   const [status, setStatus] = useState<string>('')
   const [isDiscovering, setIsDiscovering] = useState(false)
   const [isApplying, setIsApplying] = useState(false)
+  const [isTogglingPower, setIsTogglingPower] = useState(false)
+  const [isAnimating, setIsAnimating] = useState(false)
+  const [isOn, setIsOn] = useState(true)
   const [isHydrated, setIsHydrated] = useState(false)
 
   useEffect(() => {
     try {
       const savedIp = localStorage.getItem('wiz.selectedIp')
-      const savedHex = localStorage.getItem('wiz.hex')
+      const savedH = localStorage.getItem('wiz.h')
+      const savedS = localStorage.getItem('wiz.s')
+      const savedV = localStorage.getItem('wiz.v')
       const savedBrightness = localStorage.getItem('wiz.brightness')
 
       if (savedIp) setSelectedIp(savedIp)
-      if (savedHex) setHex(savedHex)
+      if (savedH) {
+        const n = Number(savedH)
+        if (Number.isFinite(n)) {
+          const hh = clamp(n, 0, 360)
+          setH(hh)
+          setFromH(hh)
+        }
+      }
+      if (savedS) {
+        const n = Number(savedS)
+        if (Number.isFinite(n)) {
+          const ss = clamp(n, 0, 100)
+          setS(ss)
+          setFromS(ss)
+        }
+      }
+      if (savedV) {
+        const n = Number(savedV)
+        if (Number.isFinite(n)) {
+          const vv = clamp(n, 0, 100)
+          setV(vv)
+          setFromV(vv)
+        }
+      }
       if (savedBrightness) {
         const n = Number(savedBrightness)
         if (Number.isFinite(n)) setBrightness(n)
@@ -43,11 +80,13 @@ export default function App() {
   useEffect(() => {
     if (!isHydrated) return
     try {
-      localStorage.setItem('wiz.hex', hex)
+      localStorage.setItem('wiz.h', String(h))
+      localStorage.setItem('wiz.s', String(s))
+      localStorage.setItem('wiz.v', String(v))
     } catch {
       // ignore
     }
-  }, [isHydrated, hex])
+  }, [isHydrated, h, s, v])
 
   useEffect(() => {
     if (!isHydrated) return
@@ -58,12 +97,36 @@ export default function App() {
     }
   }, [isHydrated, brightness])
 
+  useEffect(() => {
+    if (!status) return
+    const t = setTimeout(() => {
+      setStatus('')
+    }, 5000)
+    return () => clearTimeout(t)
+  }, [status])
+
   const discover = async () => {
     setIsDiscovering(true)
     setStatus('Discovering bulbs on LAN...')
     try {
       const res = await fetch('/api/bulbs?timeoutMs=900')
-      const json = (await res.json()) as { bulbs?: Array<{ ip: string; model?: string }> }
+
+      const bodyText = await res.text()
+      const contentType = res.headers.get('content-type') ?? ''
+      const parsed =
+        bodyText && contentType.includes('application/json')
+          ? (JSON.parse(bodyText) as unknown)
+          : undefined
+
+      if (!res.ok) {
+        const errorFromJson =
+          parsed && typeof parsed === 'object' && 'error' in (parsed as Record<string, unknown>)
+            ? String((parsed as Record<string, unknown>).error)
+            : undefined
+        throw new Error(errorFromJson ?? (bodyText ? bodyText : `Request failed (${res.status})`))
+      }
+
+      const json = (parsed ?? {}) as { bulbs?: Array<{ ip: string; model?: string }> }
       const list = json.bulbs ?? []
       setBulbs(list)
       if (!selectedIp && list[0]?.ip) setSelectedIp(list[0].ip)
@@ -75,14 +138,40 @@ export default function App() {
     }
   }
 
-  const apply = async (nextHex = hex, nextBrightness = brightness) => {
+  const togglePower = async () => {
+    if (!selectedIp) {
+      setStatus('Select a bulb first.')
+      return
+    }
+    const next = !isOn
+    setIsTogglingPower(true)
+    try {
+      const res = await fetch('/api/power', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ip: selectedIp, on: next }),
+      })
+      if (!res.ok) {
+        const json = (await res.json().catch(() => ({}))) as { error?: string }
+        throw new Error(json.error ?? `Request failed (${res.status})`)
+      }
+      setIsOn(next)
+      setStatus(next ? 'Turned on.' : 'Turned off.')
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : String(e))
+    } finally {
+      setIsTogglingPower(false)
+    }
+  }
+
+  const apply = async (next: { h: number; s: number; v: number }, nextBrightness = brightness) => {
     if (!selectedIp) {
       setStatus('Select a bulb first.')
       return
     }
     setIsApplying(true)
     try {
-      const { r, g, b } = hexToRgb(nextHex)
+      const { r, g, b } = hsbToRgb(next)
       const res = await fetch('/api/color', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -97,6 +186,39 @@ export default function App() {
       setStatus(e instanceof Error ? e.message : String(e))
     } finally {
       setIsApplying(false)
+    }
+  }
+
+  const animate = async () => {
+    if (!selectedIp) {
+      setStatus('Select a bulb first.')
+      return
+    }
+    setIsAnimating(true)
+    setStatus('Animating…')
+    try {
+      const from = hsbToRgb({ h: fromH, s: fromS, v: fromV })
+      const to = hsbToRgb({ h: toH, s: toS, v: toV })
+      const res = await fetch('/api/animate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ip: selectedIp, from, to, durationMs, brightness }),
+      })
+      if (!res.ok) {
+        const json = (await res.json().catch(() => ({}))) as { error?: string }
+        throw new Error(json.error ?? `Request failed (${res.status})`)
+      }
+      setH(toH)
+      setS(toS)
+      setV(toV)
+      setFromH(toH)
+      setFromS(toS)
+      setFromV(toV)
+      setStatus('Animated.')
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : String(e))
+    } finally {
+      setIsAnimating(false)
     }
   }
 
@@ -138,22 +260,62 @@ export default function App() {
 
       <div className="panel">
         <label className="fieldWide">
-          Color
+          Hue
+          <span
+            className="colorPreview"
+            style={{ backgroundColor: rgbToCss(hsbToRgb({ h, s, v })) }}
+          />
           <input
-            type="color"
-            className="colorInput"
-            value={hex}
+            type="range"
+            min={0}
+            max={360}
+            value={h}
             onChange={(e) => {
-              const v = e.target.value
-              setHex(v)
-              void apply(v, brightness)
+              const nextH = clamp(Number(e.target.value), 0, 360)
+              setH(nextH)
+              setFromH(nextH)
+              void apply({ h: nextH, s, v }, brightness)
             }}
           />
-          <code>{hex}</code>
+          <code>{h}</code>
         </label>
 
         <label className="fieldWide">
-          Brightness
+          Saturation
+          <input
+            type="range"
+            min={0}
+            max={100}
+            value={s}
+            onChange={(e) => {
+              const nextS = clamp(Number(e.target.value), 0, 100)
+              setS(nextS)
+              setFromS(nextS)
+              void apply({ h, s: nextS, v }, brightness)
+            }}
+          />
+          <code>{s}</code>
+        </label>
+
+        <label className="fieldWide">
+          Brightness (HSB)
+          <input
+            type="range"
+            min={0}
+            max={100}
+            value={v}
+            onChange={(e) => {
+              const nextV = clamp(Number(e.target.value), 0, 100)
+              setV(nextV)
+              setFromV(nextV)
+              void apply({ h, s, v: nextV }, brightness)
+            }}
+          />
+          <code>{v}</code>
+        </label>
+
+        {/* <label className="fieldWide">
+          Dimming
           <input
             type="range"
             min={1}
@@ -163,15 +325,125 @@ export default function App() {
               const v = Number(e.target.value)
               setBrightness(v)
             }}
-            onMouseUp={() => void apply(hex, brightness)}
-            onTouchEnd={() => void apply(hex, brightness)}
+            onMouseUp={() => void apply({ h, s, v }, brightness)}
+            onTouchEnd={() => void apply({ h, s, v }, brightness)}
           />
           <code>{brightness}</code>
+        </label> */}
+
+        {/* <label className="fieldWide">
+          Current color
+          <span
+            className="colorPreview"
+            style={{ backgroundColor: rgbToCss(hsbToRgb({ h: fromH, s: fromS, v: fromV })) }}
+          />
+          <code>
+            {fromH} / {fromS} / {fromV}
+          </code>
+        </label>
+
+        <label className="fieldWide">
+          Current hue
+          <input
+            type="range"
+            min={0}
+            max={360}
+            value={fromH}
+            onChange={(e) => setFromH(clamp(Number(e.target.value), 0, 360))}
+          />
+          <code>{fromH}</code>
+        </label>
+
+        <label className="fieldWide">
+          Current saturation
+          <input
+            type="range"
+            min={0}
+            max={100}
+            value={fromS}
+            onChange={(e) => setFromS(clamp(Number(e.target.value), 0, 100))}
+          />
+          <code>{fromS}</code>
+        </label>
+
+        <label className="fieldWide">
+          Current brightness
+          <input
+            type="range"
+            min={0}
+            max={100}
+            value={fromV}
+            onChange={(e) => setFromV(clamp(Number(e.target.value), 0, 100))}
+          />
+          <code>{fromV}</code>
+        </label> */}
+
+        <label className="fieldWide">
+          New color
+          <span
+            className="colorPreview"
+            style={{ backgroundColor: rgbToCss(hsbToRgb({ h: toH, s: toS, v: toV })) }}
+          />
+          <code>
+            {toH} / {toS} / {toV}
+          </code>
+        </label>
+
+        <label className="fieldWide">
+          New hue
+          <input
+            type="range"
+            min={0}
+            max={360}
+            value={toH}
+            onChange={(e) => setToH(clamp(Number(e.target.value), 0, 360))}
+          />
+          <code>{toH}</code>
+        </label>
+
+        <label className="fieldWide">
+          New saturation
+          <input
+            type="range"
+            min={0}
+            max={100}
+            value={toS}
+            onChange={(e) => setToS(clamp(Number(e.target.value), 0, 100))}
+          />
+          <code>{toS}</code>
+        </label>
+
+        <label className="fieldWide">
+          New brightness
+          <input
+            type="range"
+            min={0}
+            max={100}
+            value={toV}
+            onChange={(e) => setToV(clamp(Number(e.target.value), 0, 100))}
+          />
+          <code>{toV}</code>
+        </label>
+
+        <label className="fieldWide">
+          Animation time (ms)
+          <input
+            type="text"
+            value={String(durationMs)}
+            onChange={(e) => {
+              const n = Number(e.target.value)
+              if (Number.isFinite(n)) setDurationMs(n)
+            }}
+          />
+          <code>{durationMs}</code>
         </label>
 
         <div className="statusRow">
-          <button onClick={() => void apply()} disabled={isApplying}>
-            {isApplying ? 'Applying…' : 'Apply'}
+          <button onClick={togglePower} disabled={isTogglingPower || isApplying}>
+            {isTogglingPower ? 'Working…' : isOn ? 'Turn off' : 'Turn on'}
+          </button>
+          <button onClick={animate} disabled={isAnimating || isApplying || isTogglingPower}>
+            {isAnimating ? 'Animating…' : 'Animate'}
           </button>
           <span className="status">{status}</span>
         </div>
@@ -180,12 +452,51 @@ export default function App() {
   )
 }
 
-function hexToRgb(hex: string) {
-  const cleaned = hex.replace('#', '').trim()
-  const full = cleaned.length === 3 ? cleaned.split('').map((c) => c + c).join('') : cleaned
-  const n = Number.parseInt(full, 16)
-  const r = (n >> 16) & 0xff
-  const g = (n >> 8) & 0xff
-  const b = n & 0xff
-  return { r, g, b }
+function clamp(n: number, min: number, max: number) {
+  if (!Number.isFinite(n)) return min
+  return Math.max(min, Math.min(max, Math.round(n)))
+}
+
+function hsbToRgb(hsb: { h: number; s: number; v: number }) {
+  const h = ((hsb.h % 360) + 360) % 360
+  const s = clamp(hsb.s, 0, 100) / 100
+  const v = clamp(hsb.v, 0, 100) / 100
+
+  const c = v * s
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1))
+  const m = v - c
+
+  let rp = 0
+  let gp = 0
+  let bp = 0
+
+  if (h < 60) {
+    rp = c
+    gp = x
+  } else if (h < 120) {
+    rp = x
+    gp = c
+  } else if (h < 180) {
+    gp = c
+    bp = x
+  } else if (h < 240) {
+    gp = x
+    bp = c
+  } else if (h < 300) {
+    rp = x
+    bp = c
+  } else {
+    rp = c
+    bp = x
+  }
+
+  return {
+    r: clamp((rp + m) * 255, 0, 255),
+    g: clamp((gp + m) * 255, 0, 255),
+    b: clamp((bp + m) * 255, 0, 255),
+  }
+}
+
+function rgbToCss(rgb: { r: number; g: number; b: number }) {
+  return `rgb(${rgb.r}, ${rgb.g}, ${rgb.b})`
 }
