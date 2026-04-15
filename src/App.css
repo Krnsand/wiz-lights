@@ -86,3 +86,32 @@
   border: none;
   border-radius: 8px;
 }
+
+.moodGrid {
+  margin-top: 16px;
+  display: grid;
+  grid-template-columns: repeat(3, 60px);
+  gap: 30px;
+}
+
+.moodCircle {
+  width: 60px;
+  height: 60px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.06);
+  color: inherit;
+  font: inherit;
+}
+
+.moodCircleSelected {
+  outline: 2px solid rgba(255, 255, 255, 0.6);
+  outline-offset: 3px;
+}
+
+.moodControlsRow {
+  margin-top: 24px;
+}

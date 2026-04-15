@@ -5,6 +5,10 @@ import './App.css'
 export default function App() {
   const [bulbs, setBulbs] = useState<Array<{ ip: string; model?: string }>>([])
   const [selectedIp, setSelectedIp] = useState<string>('')
+  const [moodColors, setMoodColors] = useState<string[]>(() => Array.from({ length: 9 }, () => ''))
+  const [moodIndex, setMoodIndex] = useState<number>(1)
+  const [moodHighlightedIndex, setMoodHighlightedIndex] = useState<number | null>(null)
+  const [moodHex, setMoodHex] = useState<string>('#22c55e')
   const [h, setH] = useState<number>(0)
   const [s, setS] = useState<number>(100)
   const [v, setV] = useState<number>(100)
@@ -26,6 +30,8 @@ export default function App() {
   const [isHydrated, setIsHydrated] = useState(false)
 
   const discoIntervalRef = useRef<number | null>(null)
+  const moodGridRef = useRef<HTMLDivElement | null>(null)
+  const moodControlsRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
     try {
@@ -118,6 +124,24 @@ export default function App() {
     }, 5000)
     return () => clearTimeout(t)
   }, [status])
+
+  useEffect(() => {
+    const onPointerDown = (e: PointerEvent) => {
+      const grid = moodGridRef.current
+      const controls = moodControlsRef.current
+      const target = e.target
+
+      if (target instanceof Node) {
+        if (grid && grid.contains(target)) return
+        if (controls && controls.contains(target)) return
+      }
+
+      setMoodHighlightedIndex(null)
+    }
+
+    document.addEventListener('pointerdown', onPointerDown)
+    return () => document.removeEventListener('pointerdown', onPointerDown)
+  }, [])
 
   const discover = async () => {
     setIsDiscovering(true)
@@ -530,6 +554,60 @@ export default function App() {
             </button>
           )}
           <span className="status">{status}</span>
+        </div>
+
+        <div>
+          <div className="moodGrid" ref={moodGridRef}>
+            {Array.from({ length: 9 }).map((_, i) => (
+              <button
+                key={i}
+                type="button"
+                className={i + 1 === moodHighlightedIndex ? 'moodCircle moodCircleSelected' : 'moodCircle'}
+                style={{ backgroundColor: moodColors[i] || undefined }}
+                onClick={() => {
+                  setMoodIndex(i + 1)
+                  setMoodHighlightedIndex(i + 1)
+                }}
+              >
+                {i + 1}
+              </button>
+            ))}
+          </div>
+
+          <div className="controlsRow moodControlsRow" ref={moodControlsRef}>
+            <label className="field">
+              Circle
+              <select
+                className="select"
+                value={String(moodIndex)}
+                onChange={(e) => setMoodIndex(clamp(Number(e.target.value), 1, 9))}
+              >
+                {Array.from({ length: 9 }).map((_, i) => (
+                  <option key={i + 1} value={String(i + 1)}>
+                    {i + 1}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="field">
+              Color
+              <input
+                type="color"
+                className="colorInput"
+                value={moodHex}
+                onChange={(e) => {
+                  const next = e.target.value
+                  setMoodHex(next)
+                  setMoodColors((prev) => {
+                    const copy = prev.slice()
+                    copy[moodIndex - 1] = next
+                    return copy
+                  })
+                }}
+              />
+            </label>
+          </div>
         </div>
       </div>
     </div>
