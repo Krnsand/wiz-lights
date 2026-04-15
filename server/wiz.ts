@@ -1,4 +1,5 @@
 import dgram from 'node:dgram'
+import os from 'node:os'
 
 import type { RemoteInfo } from 'node:dgram'
 
@@ -73,12 +74,19 @@ export async function discoverBulbs(options?: { timeoutMs?: number }) {
   const timeoutMs = options?.timeoutMs ?? 700
   const payload = JSON.stringify({ method: 'getPilot', params: {} })
 
-  const packets = await sendAndCollect(payload, {
-    target: '255.255.255.255',
-    port: WIZ_PORT,
-    timeoutMs,
-    broadcast: true,
-  })
+  const targets = getDiscoveryTargets()
+  const packets = (
+    await Promise.all(
+      targets.map((target) =>
+        sendAndCollect(payload, {
+          target,
+          port: WIZ_PORT,
+          timeoutMs,
+          broadcast: true,
+        }),
+      ),
+    )
+  ).flat()
 
   const bulbs: WizBulb[] = []
   const seen = new Set<string>()
@@ -86,10 +94,7 @@ export async function discoverBulbs(options?: { timeoutMs?: number }) {
   for (const p of packets) {
     try {
       const json = JSON.parse(p.msg.toString('utf8')) as any
-      const ip =
-        (typeof json?.result?.ip === 'string' ? (json.result.ip as string) : undefined) ??
-        (typeof json?.params?.ip === 'string' ? (json.params.ip as string) : undefined) ??
-        p.rinfo.address
+      const ip = p.rinfo.address
 
       if (seen.has(ip)) continue
       seen.add(ip)
@@ -108,6 +113,44 @@ export async function discoverBulbs(options?: { timeoutMs?: number }) {
   }
 
   return bulbs
+}
+
+function getDiscoveryTargets() {
+  const set = new Set<string>()
+  set.add('255.255.255.255')
+
+  const ifaces = os.networkInterfaces()
+  for (const infos of Object.values(ifaces)) {
+    for (const info of infos ?? []) {
+      if (info.family !== 'IPv4') continue
+      if (info.internal) continue
+      if (!info.address || !info.netmask) continue
+
+      const b = ipv4Broadcast(info.address, info.netmask)
+      if (b) set.add(b)
+    }
+  }
+
+  return Array.from(set)
+}
+
+function ipv4Broadcast(ip: string, netmask: string) {
+  const ipInt = ipv4ToInt(ip)
+  const maskInt = ipv4ToInt(netmask)
+  if (ipInt === null || maskInt === null) return null
+  const bcast = (ipInt | (~maskInt >>> 0)) >>> 0
+  return intToIpv4(bcast)
+}
+
+function ipv4ToInt(ip: string) {
+  const parts = ip.split('.').map((p) => Number(p))
+  if (parts.length !== 4) return null
+  if (parts.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return null
+  return ((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0
+}
+
+function intToIpv4(n: number) {
+  return `${(n >>> 24) & 255}.${(n >>> 16) & 255}.${(n >>> 8) & 255}.${n & 255}`
 }
 
 export async function setColor(options: {
