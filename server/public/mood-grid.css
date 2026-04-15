@@ -1,0 +1,13 @@
+:root { color-scheme: dark; }
+body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; background: #0b0b10; color: #f3f3f3; }
+main { max-width: 720px; margin: 0 auto; padding: 24px; }
+h1 { margin: 0 0 8px; font-size: 20px; }
+p { margin: 0 0 18px; opacity: 0.85; }
+.grid { display: grid; grid-template-columns: repeat(3, 84px); gap: 14px; margin: 18px 0; }
+.cell { width: 84px; display: flex; align-items: center; justify-content: center; gap: 8px; }
+.cell strong { font-size: 12px; opacity: 0.85; }
+.cell input[type=color] { width: 44px; height: 34px; border: 1px solid rgba(255,255,255,0.16); border-radius: 10px; background: rgba(255,255,255,0.06); padding: 4px; }
+.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace; font-size: 12px; opacity: 0.9; }
+a { color: inherit; }
+.status { min-height: 18px; opacity: 0.85; }

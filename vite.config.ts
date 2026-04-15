@@ -9,6 +9,14 @@ export default defineConfig({
         target: 'http://localhost:5174',
         changeOrigin: true,
       },
+      '/admin': {
+        target: 'http://localhost:5174',
+        changeOrigin: true,
+      },
+      '/static': {
+        target: 'http://localhost:5174',
+        changeOrigin: true,
+      },
     },
   },
 })

@@ -115,3 +115,20 @@
 .moodControlsRow {
   margin-top: 24px;
 }
+
+.bulbsPanel {
+  margin-top: 28px;
+  display: grid;
+  gap: 12px;
+}
+
+.bulbList {
+  display: grid;
+  gap: 8px;
+}
+
+.bulbItem {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}

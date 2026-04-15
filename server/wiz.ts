@@ -1,5 +1,6 @@
 import dgram from 'node:dgram'
 import os from 'node:os'
+import { readFile, writeFile } from 'node:fs/promises'
 
 import type { RemoteInfo } from 'node:dgram'
 
@@ -13,6 +14,142 @@ export type WizBulb = {
 }
 
 const WIZ_PORT = 38899
+
+export type KnownBulb = {
+  mac: string
+  ip: string
+  model?: string
+  lastSeenAt: number
+  rssi?: number
+  online: boolean
+  networkId?: string
+}
+
+const bulbCache = new Map<string, KnownBulb>()
+
+const registryFilePath = new URL('./bulb-registry.json', import.meta.url).pathname
+let persistTimer: NodeJS.Timeout | null = null
+
+function getNetworkIdFromIp(ip: string) {
+  const parts = ip.split('.').map((x) => Number(x))
+  if (parts.length !== 4) return undefined
+  if (parts.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return undefined
+  return `${parts[0]}.${parts[1]}.${parts[2]}.0/24`
+}
+
+async function loadRegistryFromDisk() {
+  try {
+    const raw = await readFile(registryFilePath, 'utf8')
+    const parsed = JSON.parse(raw) as unknown
+    if (!Array.isArray(parsed)) return
+    for (const item of parsed) {
+      if (!item || typeof item !== 'object') continue
+      const mac = typeof (item as any).mac === 'string' ? (item as any).mac : ''
+      const ip = typeof (item as any).ip === 'string' ? (item as any).ip : ''
+      if (!mac || !ip) continue
+      const key = normalizeMac(mac)
+      bulbCache.set(key, {
+        mac,
+        ip,
+        model: typeof (item as any).model === 'string' ? (item as any).model : undefined,
+        rssi: typeof (item as any).rssi === 'number' ? (item as any).rssi : undefined,
+        lastSeenAt: typeof (item as any).lastSeenAt === 'number' ? (item as any).lastSeenAt : 0,
+        online: typeof (item as any).online === 'boolean' ? (item as any).online : false,
+        networkId: typeof (item as any).networkId === 'string' ? (item as any).networkId : undefined,
+      })
+    }
+  } catch {
+    // ignore
+  }
+}
+
+void loadRegistryFromDisk()
+
+function schedulePersistRegistry() {
+  if (persistTimer) return
+  persistTimer = setTimeout(() => {
+    persistTimer = null
+    const snapshot = Array.from(bulbCache.values())
+    void writeFile(registryFilePath, JSON.stringify(snapshot, null, 2), 'utf8').catch(() => undefined)
+  }, 200)
+}
+
+function normalizeMac(mac: string) {
+  return mac.toLowerCase().replace(/[^a-f0-9]/g, '')
+}
+
+export function getKnownBulbs(): KnownBulb[] {
+  return Array.from(bulbCache.values())
+}
+
+export async function probeKnownBulbs(options?: { timeoutMs?: number }) {
+  const timeoutMs = options?.timeoutMs ?? 700
+  const now = Date.now()
+
+  const bulbs = Array.from(bulbCache.values())
+  const tasks = bulbs
+    .filter((b) => b.ip)
+    .map(async (b) => {
+      const key = normalizeMac(b.mac)
+      const ok = await getPilotUnicast({ ip: b.ip, timeoutMs })
+      const current = bulbCache.get(key)
+      if (!current) return
+      if (ok) {
+        bulbCache.set(key, {
+          ...current,
+          online: true,
+          lastSeenAt: now,
+          networkId: getNetworkIdFromIp(current.ip) ?? current.networkId,
+        })
+      } else {
+        bulbCache.set(key, { ...current, online: false })
+      }
+    })
+
+  await Promise.allSettled(tasks)
+  schedulePersistRegistry()
+}
+
+function getKnownBulbByMac(mac: string) {
+  const key = normalizeMac(mac)
+  return { key, bulb: bulbCache.get(key) ?? null }
+}
+
+function markKnownBulbOffline(mac: string) {
+  const { key, bulb } = getKnownBulbByMac(mac)
+  if (!bulb) return
+  bulbCache.set(key, { ...bulb, online: false })
+  schedulePersistRegistry()
+}
+
+function markKnownBulbOnline(mac: string, patch: { ip: string; model?: string; rssi?: number }) {
+  const { key, bulb } = getKnownBulbByMac(mac)
+  const now = Date.now()
+  const networkId = getNetworkIdFromIp(patch.ip)
+  if (!bulb) {
+    bulbCache.set(key, {
+      mac,
+      ip: patch.ip,
+      model: patch.model,
+      rssi: patch.rssi,
+      lastSeenAt: now,
+      online: true,
+      networkId,
+    })
+    schedulePersistRegistry()
+    return
+  }
+  bulbCache.set(key, {
+    ...bulb,
+    ip: patch.ip,
+    model: patch.model ?? bulb.model,
+    rssi: patch.rssi ?? bulb.rssi,
+    lastSeenAt: now,
+    online: true,
+    networkId: networkId ?? bulb.networkId,
+  })
+  schedulePersistRegistry()
+}
 
 function createSocket() {
   const sock = dgram.createSocket('udp4')
@@ -29,10 +166,17 @@ function sendAndCollect(
   message: string,
   {
     target,
+    bindAddress,
     port,
     timeoutMs,
     broadcast,
-  }: { target: string; port: number; timeoutMs: number; broadcast?: boolean },
+  }: {
+    target: string
+    bindAddress?: string
+    port: number
+    timeoutMs: number
+    broadcast?: boolean
+  },
 ) {
   return new Promise<UdpResponse[]>((resolve, reject) => {
     const sock = createSocket()
@@ -60,18 +204,21 @@ function sendAndCollect(
       responses.push({ msg, rinfo })
     })
 
-    sock.bind(0, () => {
+    const onBound = () => {
       if (broadcast) sock.setBroadcast(true)
       const buf = Buffer.from(message)
       sock.send(buf, port, target)
 
       setTimeout(done, timeoutMs)
-    })
+    }
+
+    if (bindAddress) sock.bind(0, bindAddress, onBound)
+    else sock.bind(0, onBound)
   })
 }
 
 export async function discoverBulbs(options?: { timeoutMs?: number }) {
-  const timeoutMs = options?.timeoutMs ?? 700
+  const timeoutMs = options?.timeoutMs ?? 1500
   const payload = JSON.stringify({ method: 'getPilot', params: {} })
 
   const targets = getDiscoveryTargets()
@@ -79,7 +226,8 @@ export async function discoverBulbs(options?: { timeoutMs?: number }) {
     await Promise.all(
       targets.map((target) =>
         sendAndCollect(payload, {
-          target,
+          target: target.target,
+          bindAddress: target.bindAddress,
           port: WIZ_PORT,
           timeoutMs,
           broadcast: true,
@@ -112,12 +260,67 @@ export async function discoverBulbs(options?: { timeoutMs?: number }) {
     }
   }
 
-  return bulbs
+  const validated: WizBulb[] = []
+  for (const bulb of bulbs) {
+    const ok = await getPilotUnicast({ ip: bulb.ip, timeoutMs: 900 })
+    if (ok) validated.push(bulb)
+  }
+
+  const finalBulbs = validated.length > 0 ? validated : bulbs
+
+  const now = Date.now()
+  const seenThisRun = new Set<string>()
+
+  for (const bulb of finalBulbs) {
+    if (!bulb.mac) continue
+    const key = normalizeMac(bulb.mac)
+    seenThisRun.add(key)
+
+    const existing = bulbCache.get(key)
+    bulbCache.set(key, {
+      mac: bulb.mac,
+      ip: bulb.ip,
+      model: bulb.model ?? existing?.model,
+      rssi: bulb.rssi ?? existing?.rssi,
+      lastSeenAt: now,
+      online: true,
+      networkId: getNetworkIdFromIp(bulb.ip) ?? existing?.networkId,
+    })
+  }
+
+  for (const [key, entry] of bulbCache.entries()) {
+    if (seenThisRun.has(key)) continue
+    bulbCache.set(key, { ...entry, online: false })
+  }
+
+  schedulePersistRegistry()
+
+  return finalBulbs
 }
 
-function getDiscoveryTargets() {
-  const set = new Set<string>()
-  set.add('255.255.255.255')
+type DiscoveryTarget = {
+  target: string
+  bindAddress?: string
+}
+
+export function getDiscoveryDebugInfo() {
+  const ifaces = os.networkInterfaces()
+  const targets = getDiscoveryTargets()
+  return { ifaces, targets }
+}
+
+function getDiscoveryTargets(): DiscoveryTarget[] {
+  const results: DiscoveryTarget[] = []
+  const seen = new Set<string>()
+
+  const add = (t: DiscoveryTarget) => {
+    const key = `${t.bindAddress ?? ''}|${t.target}`
+    if (seen.has(key)) return
+    seen.add(key)
+    results.push(t)
+  }
+
+  add({ target: '255.255.255.255' })
 
   const ifaces = os.networkInterfaces()
   for (const infos of Object.values(ifaces)) {
@@ -127,11 +330,14 @@ function getDiscoveryTargets() {
       if (!info.address || !info.netmask) continue
 
       const b = ipv4Broadcast(info.address, info.netmask)
-      if (b) set.add(b)
+      if (!b) continue
+
+      // Bind to the interface address so replies come back on the right interface.
+      add({ target: b, bindAddress: info.address })
     }
   }
 
-  return Array.from(set)
+  return results
 }
 
 function ipv4Broadcast(ip: string, netmask: string) {
@@ -151,6 +357,30 @@ function ipv4ToInt(ip: string) {
 
 function intToIpv4(n: number) {
   return `${(n >>> 24) & 255}.${(n >>> 16) & 255}.${(n >>> 8) & 255}.${n & 255}`
+}
+
+function pickBindAddressForTargetIp(targetIp: string) {
+  const dest = ipv4ToInt(targetIp)
+  if (dest === null) return undefined
+
+  const ifaces = os.networkInterfaces()
+  for (const infos of Object.values(ifaces)) {
+    for (const info of infos ?? []) {
+      if (info.family !== 'IPv4') continue
+      if (info.internal) continue
+      if (!info.address || !info.netmask) continue
+
+      const ipInt = ipv4ToInt(info.address)
+      const maskInt = ipv4ToInt(info.netmask)
+      if (ipInt === null || maskInt === null) continue
+
+      if (((ipInt & maskInt) >>> 0) === ((dest & maskInt) >>> 0)) {
+        return info.address
+      }
+    }
+  }
+
+  return undefined
 }
 
 export async function setColor(options: {
@@ -173,6 +403,7 @@ export async function setColor(options: {
   })
 
   const sock = createSocket()
+  const bindAddress = pickBindAddressForTargetIp(options.ip)
 
   await new Promise<void>((resolve, reject) => {
     sock.on('error', (err: Error) => {
@@ -184,15 +415,27 @@ export async function setColor(options: {
       reject(err)
     })
 
-    sock.send(Buffer.from(message), WIZ_PORT, options.ip, (err?: Error | null) => {
-      try {
-        sock.close()
-      } catch {
-        // ignore
-      }
-      if (err) reject(err)
-      else resolve()
-    })
+    const sendNow = () => {
+      sock.send(Buffer.from(message), WIZ_PORT, options.ip, (err?: Error | null) => {
+        try {
+          sock.close()
+        } catch {
+          // ignore
+        }
+        if (err) {
+          const e = err as Error & { code?: string }
+          reject(
+            new Error(
+              `send ${e.code ?? 'ERROR'} ${options.ip}:${WIZ_PORT} (bind ${bindAddress ?? 'default'}): ${e.message}`,
+            ),
+          )
+          return
+        }
+        else resolve()
+      })
+    }
+
+    sock.bind(0, bindAddress ?? '0.0.0.0', sendNow)
   })
 }
 
@@ -205,6 +448,7 @@ export async function setPower(options: { ip: string; on: boolean }) {
   })
 
   const sock = createSocket()
+  const bindAddress = pickBindAddressForTargetIp(options.ip)
 
   await new Promise<void>((resolve, reject) => {
     sock.on('error', (err: Error) => {
@@ -216,16 +460,57 @@ export async function setPower(options: { ip: string; on: boolean }) {
       reject(err)
     })
 
-    sock.send(Buffer.from(message), WIZ_PORT, options.ip, (err?: Error | null) => {
-      try {
-        sock.close()
-      } catch {
-        // ignore
-      }
-      if (err) reject(err)
-      else resolve()
-    })
+    const sendNow = () => {
+      sock.send(Buffer.from(message), WIZ_PORT, options.ip, (err?: Error | null) => {
+        try {
+          sock.close()
+        } catch {
+          // ignore
+        }
+        if (err) {
+          const e = err as Error & { code?: string }
+          reject(
+            new Error(
+              `send ${e.code ?? 'ERROR'} ${options.ip}:${WIZ_PORT} (bind ${bindAddress ?? 'default'}): ${e.message}`,
+            ),
+          )
+          return
+        }
+        else resolve()
+      })
+    }
+
+    sock.bind(0, bindAddress ?? '0.0.0.0', sendNow)
   })
+}
+
+export async function getPilotUnicast(options: { ip: string; timeoutMs?: number }) {
+  const timeoutMs = options.timeoutMs ?? 800
+  const payload = JSON.stringify({ method: 'getPilot', params: {} })
+  const bindAddress = pickBindAddressForTargetIp(options.ip)
+
+  let packets: Awaited<ReturnType<typeof sendAndCollect>>
+  try {
+    packets = await sendAndCollect(payload, {
+      target: options.ip,
+      bindAddress,
+      port: WIZ_PORT,
+      timeoutMs,
+      broadcast: false,
+    })
+  } catch {
+    return null
+  }
+
+  for (const p of packets) {
+    try {
+      return JSON.parse(p.msg.toString('utf8')) as unknown
+    } catch {
+      // ignore
+    }
+  }
+
+  return null
 }
 
 export async function animateColor(options: {
@@ -259,6 +544,91 @@ export async function animateColor(options: {
     if (i < steps) {
       await sleep(Math.floor(durationMs / steps))
     }
+  }
+}
+
+export async function setPowerByMac(options: {
+  mac: string
+  on: boolean
+  timeoutMs?: number
+}) {
+  const timeoutMs = options.timeoutMs ?? 3000
+  const cached = getKnownBulbByMac(options.mac).bulb
+
+  if (cached?.ip) {
+    try {
+      await setPower({ ip: cached.ip, on: options.on })
+      markKnownBulbOnline(options.mac, { ip: cached.ip, model: cached.model, rssi: cached.rssi })
+      return { ip: cached.ip, port: WIZ_PORT, mac: cached.mac, model: cached.model, rssi: cached.rssi } satisfies WizBulb
+    } catch {
+      // fall through to discovery retry
+    }
+  }
+
+  await discoverBulbs({ timeoutMs })
+  const refreshed = getKnownBulbByMac(options.mac).bulb
+  if (!refreshed?.ip || !refreshed.online) {
+    markKnownBulbOffline(options.mac)
+    throw new Error(`No online WiZ bulb found for MAC ${options.mac}`)
+  }
+
+  try {
+    await setPower({ ip: refreshed.ip, on: options.on })
+    markKnownBulbOnline(options.mac, { ip: refreshed.ip, model: refreshed.model, rssi: refreshed.rssi })
+    return { ip: refreshed.ip, port: WIZ_PORT, mac: refreshed.mac, model: refreshed.model, rssi: refreshed.rssi } satisfies WizBulb
+  } catch (err) {
+    markKnownBulbOffline(options.mac)
+    throw err
+  }
+}
+
+export async function setColorByMac(options: {
+  mac: string
+  r: number
+  g: number
+  b: number
+  brightness?: number
+  timeoutMs?: number
+}) {
+  const timeoutMs = options.timeoutMs ?? 3000
+  const cached = getKnownBulbByMac(options.mac).bulb
+
+  if (cached?.ip) {
+    try {
+      await setColor({
+        ip: cached.ip,
+        r: options.r,
+        g: options.g,
+        b: options.b,
+        brightness: options.brightness,
+      })
+      markKnownBulbOnline(options.mac, { ip: cached.ip, model: cached.model, rssi: cached.rssi })
+      return { ip: cached.ip, port: WIZ_PORT, mac: cached.mac, model: cached.model, rssi: cached.rssi } satisfies WizBulb
+    } catch {
+      // fall through to discovery retry
+    }
+  }
+
+  await discoverBulbs({ timeoutMs })
+  const refreshed = getKnownBulbByMac(options.mac).bulb
+  if (!refreshed?.ip || !refreshed.online) {
+    markKnownBulbOffline(options.mac)
+    throw new Error(`No online WiZ bulb found for MAC ${options.mac}`)
+  }
+
+  try {
+    await setColor({
+      ip: refreshed.ip,
+      r: options.r,
+      g: options.g,
+      b: options.b,
+      brightness: options.brightness,
+    })
+    markKnownBulbOnline(options.mac, { ip: refreshed.ip, model: refreshed.model, rssi: refreshed.rssi })
+    return { ip: refreshed.ip, port: WIZ_PORT, mac: refreshed.mac, model: refreshed.model, rssi: refreshed.rssi } satisfies WizBulb
+  } catch (err) {
+    markKnownBulbOffline(options.mac)
+    throw err
   }
 }
 
@@ -352,3 +722,5 @@ function hsvToRgb(hsv: { h: number; s: number; v: number }) {
 function sleep(ms: number) {
   return new Promise<void>((resolve) => setTimeout(resolve, ms))
 }
+
+
