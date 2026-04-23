@@ -23,6 +23,7 @@ export type KnownBulb = {
   rssi?: number
   online: boolean
   networkId?: string
+  probeFailCount?: number
 }
 
 const bulbCache = new Map<string, KnownBulb>()
@@ -83,7 +84,7 @@ export function getKnownBulbs(): KnownBulb[] {
 }
 
 export async function probeKnownBulbs(options?: { timeoutMs?: number }) {
-  const timeoutMs = options?.timeoutMs ?? 700
+  const timeoutMs = options?.timeoutMs ?? 900
   const now = Date.now()
 
   const bulbs = Array.from(bulbCache.values())
@@ -100,9 +101,15 @@ export async function probeKnownBulbs(options?: { timeoutMs?: number }) {
           online: true,
           lastSeenAt: now,
           networkId: getNetworkIdFromIp(current.ip) ?? current.networkId,
+          probeFailCount: 0,
         })
       } else {
-        bulbCache.set(key, { ...current, online: false })
+        const nextFailCount = (current.probeFailCount ?? 0) + 1
+        bulbCache.set(key, {
+          ...current,
+          probeFailCount: nextFailCount,
+          online: nextFailCount >= 2 ? false : current.online,
+        })
       }
     })
 
@@ -545,6 +552,11 @@ export async function animateColor(options: {
       await sleep(Math.floor(durationMs / steps))
     }
   }
+
+  const finalHsv = rgbToHsv(options.to)
+  const finalRgb = hsvToRgb({ h: finalHsv.h, s: finalHsv.s, v: finalHsv.v })
+  await sleep(80)
+  await setColor({ ip: options.ip, r: finalRgb.r, g: finalRgb.g, b: finalRgb.b, brightness: options.brightness })
 }
 
 export async function setPowerByMac(options: {

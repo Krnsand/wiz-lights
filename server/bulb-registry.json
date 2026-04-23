@@ -1,10 +1,65 @@
 [
   {
     "mac": "9877d5bb5152",
-    "ip": "192.168.86.222",
-    "rssi": -58,
-    "lastSeenAt": 1776850391320,
+    "ip": "192.168.30.127",
+    "rssi": -65,
+    "lastSeenAt": 1776943128686,
     "online": true,
-    "networkId": "192.168.86.0/24"
+    "networkId": "192.168.30.0/24",
+    "probeFailCount": 0
+  },
+  {
+    "mac": "9877d5b071dc",
+    "ip": "192.168.30.128",
+    "rssi": -63,
+    "lastSeenAt": 1776943128686,
+    "online": true,
+    "networkId": "192.168.30.0/24",
+    "probeFailCount": 0
+  },
+  {
+    "mac": "9877d5be95a4",
+    "ip": "192.168.30.132",
+    "rssi": -69,
+    "lastSeenAt": 1776943128686,
+    "online": true,
+    "networkId": "192.168.30.0/24",
+    "probeFailCount": 0
+  },
+  {
+    "mac": "9877d5b42c56",
+    "ip": "192.168.30.139",
+    "rssi": -65,
+    "lastSeenAt": 1776943128686,
+    "online": true,
+    "networkId": "192.168.30.0/24",
+    "probeFailCount": 0
+  },
+  {
+    "mac": "9877d5b428b0",
+    "ip": "192.168.30.137",
+    "rssi": -77,
+    "lastSeenAt": 1776943128686,
+    "online": true,
+    "networkId": "192.168.30.0/24",
+    "probeFailCount": 0
+  },
+  {
+    "mac": "9877d5b42a44",
+    "ip": "192.168.30.143",
+    "rssi": -67,
+    "lastSeenAt": 1776943128686,
+    "online": true,
+    "networkId": "192.168.30.0/24",
+    "probeFailCount": 0
+  },
+  {
+    "mac": "9877d5bb50f4",
+    "ip": "192.168.30.142",
+    "rssi": -65,
+    "lastSeenAt": 1776943128686,
+    "online": true,
+    "networkId": "192.168.30.0/24",
+    "probeFailCount": 0
   }
 ]

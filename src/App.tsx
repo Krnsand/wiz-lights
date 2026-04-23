@@ -7,6 +7,10 @@ export default function App() {
     Array<{ ip: string; model?: string; mac?: string; rssi?: number; online?: boolean; lastSeenAt?: number; networkId?: string }>
   >([])
   const [selectedMac, setSelectedMac] = useState<string>('')
+  const [selectedMacs, setSelectedMacs] = useState<string[]>([])
+  const [groups, setGroups] = useState<Record<string, string[]>>({})
+  const [selectedGroup, setSelectedGroup] = useState<string>('')
+  const [newGroupName, setNewGroupName] = useState<string>('')
 
   const [h, setH] = useState<number>(0)
   const [s, setS] = useState<number>(100)
@@ -31,6 +35,11 @@ export default function App() {
   const [isOn, setIsOn] = useState(true)
   const [isHydrated, setIsHydrated] = useState(false)
 
+  const [showMode, setShowMode] = useState<'chase' | 'solid' | 'wave' | 'pulse' | 'solar' | 'aurora' | 'sparkle'>('chase')
+  const [showIntervalMs, setShowIntervalMs] = useState<number>(250)
+  const [showPalette, setShowPalette] = useState<string>('#ff0000,#00ff00,#0000ff')
+  const [isShowRunning, setIsShowRunning] = useState(false)
+
   const discoIntervalRef = useRef<number | null>(null)
   const colorRafRef = useRef<number | null>(null)
   const pendingColorRef = useRef<null | { h: number; s: number; v: number; brightness: number }>(null)
@@ -50,12 +59,17 @@ export default function App() {
   useEffect(() => {
     try {
       const savedMac = localStorage.getItem('wiz.selectedMac')
+      const savedGroups = localStorage.getItem('wiz.groups')
       const savedH = localStorage.getItem('wiz.h')
       const savedS = localStorage.getItem('wiz.s')
       const savedV = localStorage.getItem('wiz.v')
       const savedBrightness = localStorage.getItem('wiz.brightness')
 
       if (savedMac) setSelectedMac(savedMac)
+      if (savedGroups) {
+        const parsed = JSON.parse(savedGroups) as unknown
+        if (parsed && typeof parsed === 'object') setGroups(parsed as Record<string, string[]>)
+      }
       if (savedH) {
         const n = Number(savedH)
         if (Number.isFinite(n)) {
@@ -102,6 +116,15 @@ export default function App() {
 
   useEffect(() => {
     if (!isHydrated) return
+    try {
+      localStorage.setItem('wiz.groups', JSON.stringify(groups))
+    } catch {
+      // ignore
+    }
+  }, [isHydrated, groups])
+
+  useEffect(() => {
+    if (!isHydrated) return
     if (isDisco) return
     try {
       localStorage.setItem('wiz.h', String(h))
@@ -130,6 +153,57 @@ export default function App() {
       }
     }
   }, [])
+
+  const startShow = async () => {
+    const macs = activeMacs
+    if (macs.length === 0) {
+      setStatus('Select at least one bulb first.')
+      return
+    }
+
+    const colors =
+      showMode === 'wave' || showMode === 'solar' || showMode === 'aurora'
+        ? []
+        : showPalette
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean)
+
+    if (showMode !== 'wave' && showMode !== 'solar' && showMode !== 'aurora' && colors.length === 0) {
+      setStatus('Provide at least one hex color in the palette.')
+      return
+    }
+
+    try {
+      const res = await fetch('/api/show/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ macs, colors, intervalMs: showIntervalMs, brightness, mode: showMode }),
+      })
+      const json = (await res.json().catch(() => null)) as null | { error?: unknown }
+      if (!res.ok) {
+        throw new Error(typeof json?.error === 'string' ? json.error : `Request failed (${res.status})`)
+      }
+      setIsShowRunning(true)
+      setStatus('Show started.')
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  const stopShow = async () => {
+    try {
+      const res = await fetch('/api/show/stop', { method: 'POST' })
+      if (!res.ok) {
+        const json = (await res.json().catch(() => ({}))) as { error?: string }
+        throw new Error(json.error ?? `Request failed (${res.status})`)
+      }
+      setIsShowRunning(false)
+      setStatus('Show stopped.')
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : String(e))
+    }
+  }
 
   useEffect(() => {
     const load = async () => {
@@ -362,34 +436,56 @@ export default function App() {
 
   const selectedBulb = selectedMac ? bulbs.find((b) => b.mac === selectedMac) : undefined
 
+  const activeMacs = (selectedMacs.length ? selectedMacs : selectedMac ? [selectedMac] : []).filter(Boolean)
+
   const sendColor = async (next: { h: number; s: number; v: number }, nextBrightness = brightness) => {
-    if (!selectedMac) return
+    if (activeMacs.length === 0) return
     try {
       const { r, g, b } = hsbToRgb(next)
-      void fetch('/api/color', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mac: selectedMac, r, g, b, brightness: nextBrightness }),
-      })
+      if (activeMacs.length === 1) {
+        void fetch('/api/color', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mac: activeMacs[0], r, g, b, brightness: nextBrightness }),
+        })
+      } else {
+        void fetch('/api/color/bulk', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ macs: activeMacs, r, g, b, brightness: nextBrightness }),
+        })
+      }
     } catch {
       // ignore
     }
   }
 
   const sendColorFast = async (next: { h: number; s: number; v: number }, nextBrightness = brightness) => {
-    if (!selectedMac) return
+    if (activeMacs.length === 0) return
     try {
       const { r, g, b } = hsbToRgb(next)
-      void fetch('/api/color?fast=1', {
+      const url = activeMacs.length === 1 ? '/api/color?fast=1' : '/api/color/bulk?fast=1'
+      const body =
+        activeMacs.length === 1
+          ? { mac: activeMacs[0], r, g, b, brightness: nextBrightness }
+          : { macs: activeMacs, r, g, b, brightness: nextBrightness }
+
+      const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mac: selectedMac, r, g, b, brightness: nextBrightness }),
+        body: JSON.stringify(body),
       })
+
+      if (!res.ok) {
+        const json = (await res.json().catch(() => ({}))) as { error?: string }
+        setStatus(json.error ?? `Request failed (${res.status})`)
+        return
+      }
 
       refreshBulbs()
       window.setTimeout(() => refreshBulbs(), 900)
-    } catch {
-      // ignore
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : String(e))
     }
   }
 
@@ -406,17 +502,17 @@ export default function App() {
   }
 
   const togglePower = async () => {
-    if (!selectedMac) {
+    if (activeMacs.length === 0) {
       setStatus('Select a bulb first.')
       return
     }
     const next = !isOn
     setIsTogglingPower(true)
     try {
-      const res = await fetch('/api/power', {
+      const res = await fetch(activeMacs.length === 1 ? '/api/power' : '/api/power/bulk', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mac: selectedMac, on: next }),
+        body: JSON.stringify(activeMacs.length === 1 ? { mac: activeMacs[0], on: next } : { macs: activeMacs, on: next }),
       })
       if (!res.ok) {
         const json = (await res.json().catch(() => ({}))) as { error?: string }
@@ -437,17 +533,21 @@ export default function App() {
     nextBrightness = brightness,
     options?: { silent?: boolean },
   ) => {
-    if (!selectedMac) {
+    if (activeMacs.length === 0) {
       setStatus('Select a bulb first.')
       return
     }
     setIsApplying(true)
     try {
       const { r, g, b } = hsbToRgb(next)
-      const res = await fetch('/api/color', {
+      const res = await fetch(activeMacs.length === 1 ? '/api/color' : '/api/color/bulk', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mac: selectedMac, r, g, b, brightness: nextBrightness }),
+        body: JSON.stringify(
+          activeMacs.length === 1
+            ? { mac: activeMacs[0], r, g, b, brightness: nextBrightness }
+            : { macs: activeMacs, r, g, b, brightness: nextBrightness },
+        ),
       })
       if (!res.ok) {
         const json = (await res.json().catch(() => ({}))) as { error?: string }
@@ -463,7 +563,7 @@ export default function App() {
   }
 
   const animate = async () => {
-    if (!selectedBulb?.ip) {
+    if (activeMacs.length === 0) {
       setStatus('Select a bulb first.')
       return
     }
@@ -472,17 +572,33 @@ export default function App() {
     try {
       const from = hsbToRgb({ h: fromH, s: fromS, v: fromV })
       const to = hsbToRgb({ h: toH, s: toS, v: toV })
-      const res = await fetch('/api/animate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ip: selectedBulb.ip,
-          from,
-          to,
-          durationMs: clamp(durationMs, 0, 60_000),
-          brightness,
-        }),
-      })
+      const ms = clamp(durationMs, 0, 60_000)
+
+      const res =
+        activeMacs.length === 1
+          ? await fetch('/api/animate', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                ip: selectedBulb?.ip,
+                from,
+                to,
+                durationMs: ms,
+                brightness,
+              }),
+            })
+          : await fetch('/api/animate/bulk', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                macs: activeMacs,
+                from,
+                to,
+                durationMs: ms,
+                brightness,
+              }),
+            })
+
       if (!res.ok) {
         const json = (await res.json().catch(() => ({}))) as { error?: string }
         throw new Error(json.error ?? `Request failed (${res.status})`)
@@ -620,6 +736,181 @@ export default function App() {
             ))}
           </select>
         </label>
+
+        <div className="panel">
+          <div className="statusRow">
+            <strong>Light show</strong>
+            <span className="status">{isShowRunning ? 'Running' : 'Stopped'}</span>
+          </div>
+
+          <label className="fieldWide">
+            Mode
+            <select
+              value={showMode}
+              onChange={(e) => {
+                const next = e.target.value as 'chase' | 'solid' | 'wave' | 'pulse' | 'solar' | 'aurora' | 'sparkle'
+                setShowMode(next)
+                if (next === 'pulse' && !showPalette.trim()) setShowPalette('#ffffff')
+              }}
+              className="select"
+            >
+              <option value="pulse">Pulse (1 color)</option>
+              <option value="sparkle">Sparkle (2 colors)</option>
+              <option value="solid">Solid (3 colors)</option>
+              <option value="chase">Chase (3 colors)</option>
+              <option value="wave">Wave</option>
+              <option value="solar">Solar Flare</option>
+              <option value="aurora">Aurora</option>
+            </select>
+          </label>
+
+          <label className="fieldWide">
+            Interval (ms)
+            <input
+              type="number"
+              min={100}
+              max={60000}
+              value={showIntervalMs}
+              onChange={(e) => {
+                const n = Number(e.target.value)
+                if (Number.isFinite(n)) setShowIntervalMs(n)
+              }}
+            />
+          </label>
+
+          <label className="fieldWide">
+            Palette (comma-separated hex)
+            <input type="text" value={showPalette} onChange={(e) => setShowPalette(e.target.value)} />
+          </label>
+
+          {!isShowRunning ? (
+            <button type="button" onClick={startShow} disabled={isApplying || isAnimating || isTogglingPower}>
+              Start show
+            </button>
+          ) : (
+            <button type="button" onClick={stopShow} disabled={isApplying || isAnimating || isTogglingPower}>
+              Stop show
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="panel">
+        <div className="statusRow">
+          <strong>Selected bulbs</strong>
+          <span className="status">{selectedMacs.length ? `${selectedMacs.length} selected` : 'Using dropdown selection'}</span>
+          <button
+            type="button"
+            onClick={() => {
+              const allMacs = bulbs.filter((b) => b.mac).map((b) => b.mac as string)
+              setSelectedMacs(allMacs)
+            }}
+          >
+            Select all
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              const onlineMacs = bulbs.filter((b) => b.mac && b.online !== false).map((b) => b.mac as string)
+              setSelectedMacs(onlineMacs)
+            }}
+          >
+            Select all online
+          </button>
+          <button type="button" onClick={() => setSelectedMacs([])}>
+            Clear
+          </button>
+        </div>
+
+        <div className="statusRow">
+          <strong>Groups</strong>
+          <select
+            className="select"
+            value={selectedGroup}
+            onChange={(e) => {
+              const name = e.target.value
+              setSelectedGroup(name)
+              const macs = groups[name]
+              if (Array.isArray(macs) && macs.length) setSelectedMacs(macs)
+              else setSelectedMacs([])
+            }}
+          >
+            <option value="">Select group…</option>
+            {Object.keys(groups)
+              .sort((a, b) => a.localeCompare(b))
+              .map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+          </select>
+
+          <input
+            type="text"
+            value={newGroupName}
+            onChange={(e) => setNewGroupName(e.target.value)}
+            placeholder="New group name"
+          />
+
+          <button
+            type="button"
+            onClick={() => {
+              const name = newGroupName.trim()
+              if (!name) return
+              if (selectedMacs.length === 0) return
+              setGroups((prev) => ({ ...prev, [name]: selectedMacs.slice() }))
+              setSelectedGroup(name)
+              setNewGroupName('')
+            }}
+          >
+            Save current selection
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              const name = selectedGroup
+              if (!name) return
+              setGroups((prev) => {
+                const copy = { ...prev }
+                delete copy[name]
+                return copy
+              })
+              setSelectedGroup('')
+            }}
+          >
+            Delete group
+          </button>
+        </div>
+
+        <div className="panel">
+          {bulbs
+            .filter((b) => b.mac)
+            .map((b) => {
+              const mac = b.mac as string
+              const checked = selectedMacs.includes(mac)
+              return (
+                <label key={mac} className="fieldWide">
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={(e) => {
+                      const next = e.target.checked
+                        ? Array.from(new Set([...selectedMacs, mac]))
+                        : selectedMacs.filter((m) => m !== mac)
+                      setSelectedMacs(next)
+                    }}
+                  />
+                  <span>
+                    {b.model ? `${b.model} ` : ''}
+                    {b.ip}
+                    {` • ${mac}`}
+                    {b.online === false ? ' (offline)' : ''}
+                  </span>
+                </label>
+              )
+            })}
+        </div>
       </div>
 
       <div className="panel">
